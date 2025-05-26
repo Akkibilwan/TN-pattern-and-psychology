@@ -1,0 +1,5 @@
+streamlit
+requests
+pillow
+openai
+google-generative-ai
