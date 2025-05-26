@@ -1,21 +1,16 @@
 import streamlit as st
-import os
-import io
 import json
 import base64
-import requests
-from PIL import Image
 import openai
-import google.generativeai as genai
 
 # --- Configuration & Credentials ---
 st.set_page_config(
-    page_title="Multi-Thumbnail Analyzer & Prompt Generator",
+    page_title="Psychology-Driven Thumbnail Analyzer & Generator",
     page_icon="🖼️",
     layout="wide"
 )
 
-# Custom CSS (Dark Mode)
+# Custom Dark Mode CSS
 st.markdown("""
 <style>
     .main { background-color: #0f0f0f; color: #f1f1f1; }
@@ -38,94 +33,96 @@ st.markdown("""
         margin-bottom: 20px;
         background-color: #181818;
     }
-    .prompt-section {
-        background-color: #202020;
-        padding: 10px;
-        border-radius: 5px;
-        margin-bottom: 10px;
-    }
-    .prompt-section h4 {
-        margin-top: 0;
-        color: #ffffff;
-    }
 </style>
 """, unsafe_allow_html=True)
 
-# --- Client Setup ---
+# --- OpenAI Setup ---
 def setup_openai():
-    key = st.sidebar.text_input("OpenAI API Key", type="password")
-    if key:
-        openai.api_key = key
+    api_key = st.sidebar.text_input("OpenAI API Key", type="password")
+    if api_key:
+        openai.api_key = api_key
     else:
-        st.sidebar.error("Provide OpenAI API key for analysis & generation.")
+        st.sidebar.error("Please enter your OpenAI API key.")
 
-# --- Utilities ---
-def encode_image_to_base64(image_bytes):
-    return base64.b64encode(image_bytes).decode('utf-8')
+# --- Utility Functions ---
+def encode_image_to_base64(bytes_data):
+    return base64.b64encode(bytes_data).decode('utf-8')
 
-# --- Analysis & Generation ---
-def analyze_psychology(image_b64, filename):
-    prompt = f"You are an expert in visual communication, marketing psychology, and digital design. " \
-             f"Analyze this thumbnail image (base64) and identify its psychology and pattern. Provide JSON with keys: 'dominant_colors', 'composition', 'text_style', 'background_effects', 'branding', 'emotional_impact', 'contrast_usage', 'intrigue_narrative'."  
+# --- Analysis and Generation ---
+def analyze_psychology(image_b64):
+    prompt = (
+        "You are an expert in visual communication, marketing psychology, and digital design. "
+        "Analyze the given thumbnail (provided as base64). "
+        "Identify its psychological strategies and return a JSON with keys: "
+        "'dominant_colors', 'composition', 'text_style', 'background_effects', 'branding', "
+        "'emotional_impact', 'contrast_usage', 'intrigue_narrative'."
+    )
     resp = openai.ChatCompletion.create(
         model="gpt-4o",
-        messages=[
-            {"role":"user", "content": prompt}
-        ],
+        messages=[{"role": "user", "content": prompt + "\n\n" + image_b64}],
         max_tokens=500
     )
     try:
         return json.loads(resp.choices[0].message.content)
-    except:
-        return {'error': resp.choices[0].message.content}
+    except json.JSONDecodeError:
+        return {"error": resp.choices[0].message.content}
 
 
 def synthesize_pattern(analyses):
-    prompt = "You are an expert in visual design psychology. Given these analyses JSON list, identify common patterns and psychological strategies. Output a concise cue for thumbnail generation.\n" + json.dumps(analyses)
+    prompt = (
+        "You are an expert in marketing psychology. Given these analyses JSON list, "
+        "identify common visual patterns and psychological strategies, and output a concise prompt "
+        "to generate a new thumbnail replicating the same psychology:\n"
+        + json.dumps(analyses)
+    )
     resp = openai.ChatCompletion.create(
         model="gpt-4o",
-        messages=[{"role":"user","content":prompt}],
+        messages=[{"role": "user", "content": prompt}],
         max_tokens=300
     )
     return resp.choices[0].message.content
 
 
-def generate_thumbnail(prompt_text):
-    img_resp = openai.Image.create(
+def generate_thumbnail(cue):
+    resp = openai.Image.create(
         model="gpt_image_1",
-        prompt=prompt_text,
+        prompt=cue,
         n=1,
         size="1024x576"
     )
-    return img_resp['data'][0]['url']
+    return resp['data'][0]['url']
 
-# --- Main App ---
+# --- Main Application ---
 def main():
     st.title("🖼️ Psychology-Driven Thumbnail Analyzer & Generator")
     setup_openai()
 
-    uploaded = st.file_uploader("Upload thumbnails (JPG/PNG)", type=["jpg","png","jpeg"], accept_multiple_files=True)
+    uploaded = st.file_uploader(
+        "Upload thumbnail images (JPG/PNG)",
+        type=["jpg","png","jpeg"],
+        accept_multiple_files=True
+    )
+
     if uploaded:
         if st.button("Analyze & Generate"):
             analyses = []
             for file in uploaded:
-                img_bytes = file.read()
-                img_b64 = encode_image_to_base64(img_bytes)
-                analysis = analyze_psychology(img_b64, file.name)
+                bytes_data = file.read()
+                b64 = encode_image_to_base64(bytes_data)
+                analysis = analyze_psychology(b64)
                 analyses.append(analysis)
-                st.write(f"**Analysis for {file.name}:**")
+                st.subheader(f"Analysis for {file.name}")
                 st.json(analysis)
 
-            pattern_prompt = synthesize_pattern(analyses)
-            st.write("**Synthesized Pattern & Psychology Prompt:**")
-            st.markdown(pattern_prompt)
+            cue = synthesize_pattern(analyses)
+            st.subheader("Synthesized Generation Prompt")
+            st.text(cue)
 
-            st.write("**Generating New Thumbnail...**")
-            thumb_url = generate_thumbnail(pattern_prompt)
-            st.image(thumb_url, caption="Generated Thumbnail", use_column_width=True)
-
+            st.subheader("Generated Thumbnail")
+            url = generate_thumbnail(cue)
+            st.image(url, use_column_width=True, caption="New Thumbnail")
     else:
-        st.info("Upload one or more thumbnail images to begin.")
+        st.info("Please upload one or more thumbnail images.")
 
 if __name__ == "__main__":
     main()
