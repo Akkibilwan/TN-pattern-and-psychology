@@ -7,6 +7,7 @@ import base64
 # —————————————————————————————————————————————————————————————
 # CONFIG
 # —————————————————————————————————————————————————————————————
+# Use your new OpenAI Python v1.x interface:
 openai.api_key = st.secrets["OPENAI_API_KEY"]
 
 st.set_page_config(
@@ -16,18 +17,18 @@ st.set_page_config(
 st.title("📸 Thumbnail Analyzer & Prompt-to-Image Generator")
 
 # —————————————————————————————————————————————————————————————
-# HELPER: GPT-4o VISION ANALYSIS
+# HELPER: GPT-4o VISION ANALYSIS (new v1.x calls)
 # —————————————————————————————————————————————————————————————
 def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
     """
     Sends a base64-embedded image to GPT-4o Vision and returns
     its raw JSON-style response as text.
     """
-    # 1) Encode image as base64 data URL
+    # 1) Encode as data URL
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     data_url = f"data:image/png;base64,{b64}"
 
-    # 2) Build multimodal messages
+    # 2) Build the multimodal messages
     system = {
         "role": "system",
         "content": (
@@ -60,10 +61,11 @@ def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
         "name": filename
     }
 
-    resp = openai.ChatCompletion.create(
+    # NEW v1.x call:
+    resp = openai.chat.completions.create(
         model="gpt-4o",
         messages=[system, user],
-        max_tokens=500,
+        max_tokens=500
     )
     return resp.choices[0].message.content
 
@@ -81,7 +83,7 @@ if not uploaded_files:
     st.stop()
 
 # —————————————————————————————————————————————————————————————
-# 2) ANALYZE WITH GPT-4o VISION
+# 2) ANALYZE EACH WITH GPT-4o VISION
 # —————————————————————————————————————————————————————————————
 analyses = []
 
@@ -95,7 +97,7 @@ for img_file in uploaded_files:
     st.write("🔍 Raw GPT-Vision response:")
     st.code(raw, language="")
 
-    # Extract the first { … } block
+    # Extract first JSON object
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start == -1 or end == 0:
@@ -103,7 +105,7 @@ for img_file in uploaded_files:
         continue
     json_str = raw[start:end]
 
-    # Strip trailing commas before } or ]
+    # Remove any trailing commas before } or ]
     json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
 
     # Parse or show error
@@ -158,14 +160,14 @@ custom_prompt = st.text_area(
 )
 
 # —————————————————————————————————————————————————————————————
-# 5) GENERATE SAMPLE THUMBNAIL (gpt_image_1)
+# 5) GENERATE SAMPLE THUMBNAIL (using gpt_image_1)
 # —————————————————————————————————————————————————————————————
 if st.button("Generate Sample Thumbnail"):
     if not custom_prompt.strip():
         st.error("Please enter a non-empty prompt above.")
     else:
         with st.spinner("Generating with gpt_image_1…"):
-            img_resp = openai.Image.create(
+            img_resp = openai.images.generate(
                 model="gpt_image_1",
                 prompt=custom_prompt,
                 n=1,
