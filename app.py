@@ -1,161 +1,120 @@
 # app.py
 import streamlit as st
-import os, io, base64, json
+import os, io, base64
 from PIL import Image
 import openai
 
-st.set_page_config(page_title="Thumbnail Insights & Wireframe Generator", layout="wide")
+st.set_page_config(page_title="Thumbnail Analyzer", layout="wide")
 
-def get_openai_client():
+def get_client():
     key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not key:
         key = st.sidebar.text_input("OpenAI API Key", type="password")
     if not key:
-        st.sidebar.error("🔑 API key required")
+        st.sidebar.error("API key required.")
         return None
     return openai.OpenAI(api_key=key)
 
 def to_b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
-def analyze_thumbnail(client, b64str: str, name: str) -> dict:
-    system = "You are an expert in visual communication and marketing psychology. Respond ONLY with JSON."
-    user_content = [
-        {"type": "text", "text": f"Thumbnail '{name}': extract exactly four keys in JSON:"},
-        {"type": "text", "text": "• patterns: list 3–5 visual patterns (e.g., ‘bold text overlay’, ‘rule of thirds’)."},
-        {"type": "text", "text": "• psychology: list 3–5 psychological hooks (e.g., ‘urgency’, ‘curiosity’)."},
-        {"type": "text", "text": "• pros: list 3 reasons why this would perform well on YouTube."},
-        {"type": "text", "text": "• cons: list 3 reasons why it might underperform."},
-        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64str}"}}
-    ]
-    resp = client.chat.completions.create(
+def analyze_image(client, b64str: str, name: str) -> str:
+    """
+    Returns plain-text analysis:
+      • Dominant Colors: red, blue…
+      • Psychological Hooks: urgency, curiosity…
+    """
+    sys = "You are an expert in visual communication and marketing psychology."
+    usr = (
+        f"Analyze image '{name}'.\n"
+        "Provide TWO bullet lists, plain text only:\n"
+        "- Dominant Colors (3–5 color names)\n"
+        "- Psychological Hooks (3–5 techniques: urgency, curiosity, etc.)\n"
+        f"<IMAGE_DATA>data:image/jpeg;base64,{b64str}</IMAGE_DATA>"
+    )
+    r = client.chat.completions.create(
         model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user",   "content": user_content},
-        ],
-        max_tokens=250
+        messages=[{"role":"system","content":sys}, {"role":"user","content":usr}],
+        max_tokens=150
     )
-    text = resp.choices[0].message.content
-    try:
-        parsed = json.loads(text)
-        return {
-            "patterns":   parsed.get("patterns", []),
-            "psychology": parsed.get("psychology", []),
-            "pros":       parsed.get("pros", []),
-            "cons":       parsed.get("cons", [])
-        }
-    except json.JSONDecodeError:
-        st.warning(f"⚠️ Failed to parse analysis JSON for '{name}'.")
-        return {"patterns":[], "psychology":[], "pros":[], "cons":[]}
+    return r.choices[0].message.content.strip()
 
-def synthesize_insights(client, analyses: list[dict]) -> dict:
-    subset = analyses[-5:]
-    system = "You are a design and marketing-psychology expert. Respond ONLY with JSON."
-    user_text = (
-        "Input = JSON array of objects with keys patterns, psychology, pros, cons.\n"
-        "1) common_patterns: list 3 top visual patterns shared across thumbnails.\n"
-        "2) common_psychology: list 3 top psychological hooks shared.\n"
-        "3) wireframe_prompt: one short prompt for an AI to generate a simple thumbnail WIREFRAME using those patterns & psychology."
+def synthesize(client, analyses: list[str]) -> str:
+    """
+    Takes the plain-text analyses, and returns:
+      • 3 bullets summarizing common patterns & hooks
+      • A single line starting with "Image Prompt:" for generation
+    """
+    # only keep the last 5 analyses to stay small
+    recent = analyses[-5:]
+    joined = "\n\n".join(f"Analysis #{i+1}:\n{a}" for i,a in enumerate(recent))
+    sys = "You are an expert in marketing psychology and design."
+    usr = (
+        "Given these analyses, in plain text:\n"
+        "1) Summarize the COMMON visual patterns & psychological hooks in 3 bullet points.\n"
+        "2) Then on its own line, write:\n"
+        "   Image Prompt: <your concise prompt to recreate that style>\n\n"
+        f"{joined}"
     )
-    resp = client.chat.completions.create(
+    r = client.chat.completions.create(
         model="gpt-4o",
-        messages=[
-            {"role":"system","content":system},
-            {"role":"user","content":user_text},
-            {"role":"assistant","content":""},
-            {"role":"user","content":json.dumps(subset)}
-        ],
-        max_tokens=300
+        messages=[{"role":"system","content":sys}, {"role":"user","content":usr}],
+        max_tokens=200
     )
-    text = resp.choices[0].message.content
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        st.warning("⚠️ Failed to parse synthesis JSON.")
-        return {
-            "common_patterns":   [],
-            "common_psychology": [],
-            "wireframe_prompt":  text
-        }
+    return r.choices[0].message.content.strip()
 
-def generate_wireframe(client, prompt: str) -> Image.Image:
-    # <-- updated model name here:
+def generate_image(client, prompt: str) -> Image.Image:
     resp = client.images.generate(
-        model="gpt-image-1",
-        prompt=prompt,
-        size="1024x576",
-        n=1
+        model="gpt_image_1", prompt=prompt, size="1024x576", n=1
     )
-    img_bytes = base64.b64decode(resp.data[0].b64_json)
-    return Image.open(io.BytesIO(img_bytes))
+    data = base64.b64decode(resp.data[0].b64_json)
+    return Image.open(io.BytesIO(data))
 
 def main():
-    st.title("🖼️ Thumbnail Insights & Wireframe Generator")
-    st.markdown(
-        "1. Upload related thumbnails  \n"
-        "2. Analyze each for patterns, psychology, pros/cons  \n"
-        "3. Synthesize common insights  \n"
-        "4. Generate a wireframe image based on those insights"
-    )
+    st.title("🖼️ Thumbnail Analyzer & Generator")
+    st.write("1. Upload thumbnails → 2. Analyze bullets → 3. Synthesize bullets & prompt → 4. Generate image")
 
-    client = get_openai_client()
+    client = get_client()
     if not client:
         return
 
-    if "data" not in st.session_state:
-        st.session_state.data = []
+    if "items" not in st.session_state:
+        st.session_state.items = []  # each is {name, size, analysis}
 
-    uploads = st.file_uploader("Upload JPG/PNG thumbnails", accept_multiple_files=True)
-    if uploads:
-        new = []
-        for f in uploads:
+    files = st.file_uploader("Upload JPG/PNG", accept_multiple_files=True)
+    if files:
+        to_process = []
+        for f in files:
             raw = f.read()
-            if not any(d["name"]==f.name and d["size"]==len(raw) for d in st.session_state.data):
-                new.append((f.name, raw))
-        if new and st.button(f"Analyze {len(new)} New"):
-            with st.spinner("Analyzing thumbnails…"):
-                for name, raw in new:
-                    analysis = analyze_thumbnail(client, to_b64(raw), name)
-                    st.session_state.data.append({
-                        "name":     name,
-                        "size":     len(raw),
-                        "analysis": analysis
-                    })
-            st.success("Analysis complete!")
+            if not any(i["name"]==f.name and i["size"]==len(raw) for i in st.session_state.items):
+                to_process.append((f.name, raw))
+        if to_process and st.button(f"Analyze {len(to_process)} New"):
+            with st.spinner("Analyzing…"):
+                for name, raw in to_process:
+                    b64str = to_b64(raw)
+                    analysis = analyze_image(client, b64str, name)
+                    st.session_state.items.append({"name":name,"size":len(raw),"analysis":analysis})
+            st.success("Analysis done.")
 
-    if st.session_state.data:
-        st.markdown("### 1. Individual Analyses")
-        for item in st.session_state.data:
-            st.markdown(f"**{item['name']}**")
-            st.write("- **Patterns:**", ", ".join(item["analysis"]["patterns"]))
-            st.write("- **Psychology:**", ", ".join(item["analysis"]["psychology"]))
-            st.write("- **Pros:**", ", ".join(item["analysis"]["pros"]))
-            st.write("- **Cons:**", ", ".join(item["analysis"]["cons"]))
-            st.markdown("---")
+    if st.session_state.items:
+        st.markdown("### Individual Analyses")
+        for it in st.session_state.items:
+            st.markdown(f"**{it['name']}**")
+            st.write(it["analysis"])
 
-        if st.button("2. Synthesize & Generate Wireframe"):
-            with st.spinner("Synthesizing insights…"):
-                analyses = [d["analysis"] for d in st.session_state.data]
-                result = synthesize_insights(client, analyses)
+        if st.button("Synthesize & Generate"):
+            with st.spinner("Synthesizing…"):
+                texts = [it["analysis"] for it in st.session_state.items]
+                synthesis = synthesize(client, texts)
+            st.subheader("Common Patterns & Hooks")
+            st.write("\n".join(synthesis.split("\n")[:-1]))  # all lines except the last
+            prompt_line = synthesis.split("\n")[-1]
+            st.subheader("Generated Thumbnail")
+            thumb = generate_image(client, prompt_line.replace("Image Prompt:","").strip())
+            st.image(thumb, use_column_width=True)
+            st.markdown(f"**{prompt_line}**")
 
-            st.subheader("### 2. Common Insights")
-            st.write("**Common Patterns:**")
-            for p in result.get("common_patterns", []):
-                st.write(f"- {p}")
-            st.write("**Common Psychology:**")
-            for psy in result.get("common_psychology", []):
-                st.write(f"- {psy}")
-
-            st.subheader("### 3. Generated Wireframe")
-            wire = generate_wireframe(client, result.get("wireframe_prompt",""))
-            st.image(wire, use_column_width=True)
-            st.markdown(f"**Wireframe Prompt:**\n```\n{result.get('wireframe_prompt','')}\n```")
-
-    st.sidebar.info(
-        "Uses GPT-4 Vision to analyze thumbnails, then GPT-4 to synthesize insights,\n"
-        "and gpt-image-1 to generate a simple wireframe image."
-    )
+    st.sidebar.info("Uses only OpenAI: GPT-4 Vision for analysis & gpt_image_1 for generation.")
 
 if __name__ == "__main__":
     main()
