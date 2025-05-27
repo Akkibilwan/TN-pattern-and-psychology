@@ -35,25 +35,22 @@ for img_file in uploaded_files:
     st.subheader(f"Analysis for: {img_file.name}")
     st.image(img_file, use_column_width=True)
 
-    # read bytes
     img_bytes = img_file.read()
 
-    # call GPT-4o vision
     system_prompt = (
         "You are an expert in visual communication, marketing psychology, and digital design.  "
-        "Respond *only* with a single JSON object "
-        "– no markdown, no extra commentary."
+        "Respond *only* with a single JSON object – no markdown or extra text."
     )
     user_prompt = (
         "Analyze this thumbnail and return a JSON object with exactly these keys:\n"
-        "  • visual_breakdown (list of the key visual elements),\n"
-        "  • psychology (the attention-grabbing psychological tactics),\n"
-        "  • pattern (the overarching design pattern or layout).\n\n"
-        "Example format:\n"
+        "  • visual_breakdown (list of key visual elements),\n"
+        "  • psychology (the attention-grabbing tactics),\n"
+        "  • pattern (the overall design pattern).\n\n"
+        "Example:\n"
         "```json\n"
         "{\n"
-        '  "visual_breakdown": ["bold text", "high-contrast colors", "face close-up"],\n'
-        '  "psychology": "uses curiosity gap by showing half the story",\n'
+        '  "visual_breakdown": ["bold text", "high-contrast colors"],\n'
+        '  "psychology": "curiosity gap by showing partial info",\n'
         '  "pattern": "text on left, face on right"\n'
         "}\n"
         "```"
@@ -72,34 +69,33 @@ for img_file in uploaded_files:
     )
 
     raw = resp.choices[0].message.content
-
-    # —————————————————————————————————————————————————————————————
-    # DEBUG: show raw for troubleshooting
-    # —————————————————————————————————————————————————————————————
     st.write("🔍 Raw GPT response:")
     st.code(raw, language="")
 
-    # —————————————————————————————————————————————————————————————
-    # EXTRACT JSON, STRIP TRAILING COMMAS
-    # —————————————————————————————————————————————————————————————
-    m = re.search(r"```json\s*(\{.*\})\s*```", raw, flags=re.S)
-    payload = m.group(1) if m else raw
-    payload = re.sub(r",\s*([}\]])", r"\1", payload)
+    # ————————————————— Extract JSON via naive find —————————————————
+    text_response = raw.strip()
+    json_start = text_response.find("{")
+    json_end = text_response.rfind("}") + 1
+    if json_start != -1 and json_end != -1:
+        json_str = text_response[json_start:json_end]
+    else:
+        json_str = raw
+
+    # Optional: remove trailing commas before ] or }
+    json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
 
     # —————————————————————————————————————————————————————————————
     # PARSE or SHOW ERROR
     # —————————————————————————————————————————————————————————————
     try:
-        analysis = json.loads(payload)
+        analysis = json.loads(json_str)
     except json.JSONDecodeError as e:
         st.error(f"🛑 JSON parsing failed: {e}")
-        st.code(payload, language="json")
+        st.code(json_str, language="json")
         continue
 
-    # save and display
     analyses.append({"file": img_file.name, **analysis})
     st.json(analysis)
-
 
 # —————————————————————————————————————————————————————————————
 # 3) SYNTHESIZE COMMON PATTERNS & PSYCHOLOGY
@@ -131,7 +127,7 @@ default_template = (
 st.code(default_template, language="markdown")
 
 custom_prompt = st.text_area(
-    "✏️ Customize or copy this prompt to feed into the image-generation model:",
+    "✏️ Customize or copy this prompt for image generation:",
     value=default_template,
     height=200
 )
