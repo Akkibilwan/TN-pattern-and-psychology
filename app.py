@@ -18,54 +18,52 @@ def get_client():
 def to_b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
-def analyze_image(client, b64str, name):
+def analyze_image(client, b64str: str, name: str) -> dict:
     """
-    Returns JSON with two keys:
-      - dominant_colors: [...color names...]
-      - hooks: [...psychological hooks...]
-    Falls back to empty lists on parse error.
+    Uses GPT-4 Vision via a structured image_url part.
+    Returns JSON with just:
+      • dominant_colors: [...]
+      • hooks: [...]
     """
-    system = "You are an expert in marketing psychology."
-    user = (
-        f"Image '{name}': respond ONLY with JSON containing:\n"
-        "  dominant_colors: list of 3–5 color words\n"
-        "  hooks: list of 3–5 psychological techniques (e.g., urgency, curiosity)\n"
-        f"<IMAGE>data:image/jpeg;base64,{b64str}</IMAGE>"
-    )
+    system = "You are an expert in marketing psychology. Respond ONLY with JSON."
+    user_content = [
+        {"type": "text", "text": f"Image '{name}': extract two keys:"},
+        {"type": "text", "text": "• dominant_colors: list 3–5 color names"},
+        {"type": "text", "text": "• hooks: list 3–5 psychological techniques"},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64str}"}}
+    ]
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
+            {"role":"system","content":system},
+            {"role":"user","content":user_content}
         ],
-        max_tokens=120
+        max_tokens=100
     )
-    text = resp.choices[0].message.content.strip()
+    text = resp.choices[0].message.content
     try:
-        j = json.loads(text)
-        # ensure keys exist
+        parsed = json.loads(text)
         return {
-            "dominant_colors": j.get("dominant_colors", []),
-            "hooks": j.get("hooks", [])
+            "dominant_colors": parsed.get("dominant_colors", []),
+            "hooks":          parsed.get("hooks", [])
         }
     except json.JSONDecodeError:
-        st.warning(f"⚠️ Failed to parse JSON for '{name}'.")
+        st.warning(f"Couldn't parse JSON for '{name}'.")
         return {"dominant_colors": [], "hooks": []}
 
-def synthesize(client, analyses):
+def synthesize(client, items: list[dict]) -> dict:
     """
-    From up to 5 of those small JSONs, return:
-      - analysis_summary: list of 3 bullet-points
-      - generation_prompt: single concise prompt
-    Falls back to echoing text if parse fails.
+    From up to 5 of those tiny JSONs, return:
+      • analysis_summary: [3 bullets…]
+      • generation_prompt: "…"
     """
-    subset = analyses[-5:]
+    subset = items[-5:]
     prompt = (
-        "You are an expert designer. Input = JSON array of objects "
-        "with dominant_colors and hooks. "
+        "You are a design-and-psychology expert.\n"
+        "Input=JSON array with objects {dominant_colors, hooks}.\n"
         "Output ONLY valid JSON with:\n"
         "  analysis_summary: array of 3 summary bullets,\n"
-        "  generation_prompt: one short prompt to recreate that style."
+        "  generation_prompt: single concise prompt to recreate that style.\n"
     )
     resp = client.chat.completions.create(
         model="gpt-4o",
@@ -75,38 +73,36 @@ def synthesize(client, analyses):
         ],
         max_tokens=200
     )
-    text = resp.choices[0].message.content.strip()
+    text = resp.choices[0].message.content
     try:
-        result = json.loads(text)
-        summary = result.get("analysis_summary", [])
-        prompt_txt = result.get("generation_prompt", "")
-        # normalize
-        if isinstance(summary, str):
-            summary = [summary]
-        return {"analysis_summary": summary, "generation_prompt": prompt_txt}
+        return json.loads(text)
     except json.JSONDecodeError:
-        st.warning("⚠️ Failed to parse synthesis JSON.")
-        return {"analysis_summary": [text], "generation_prompt": text}
+        st.warning("Failed to parse synthesis JSON.")
+        return {"analysis_summary":[text], "generation_prompt":text}
 
-def generate_image(client, prompt):
+def generate_image(client, prompt: str) -> Image.Image:
     resp = client.images.generate(
-        model="gpt_image_1", prompt=prompt, size="1024x576", n=1
+        model="gpt_image_1",
+        prompt=prompt,
+        size="1024x576",
+        n=1
     )
-    data = base64.b64decode(resp.data[0].b64_json)
-    return Image.open(io.BytesIO(data))
+    img_data = base64.b64decode(resp.data[0].b64_json)
+    return Image.open(io.BytesIO(img_data))
 
 def main():
     st.title("🖼️ Thumbnail Analyzer & Generator")
     client = get_client()
-    if not client: return
+    if not client:
+        return
 
     if "imgs" not in st.session_state:
         st.session_state.imgs = []
 
-    files = st.file_uploader("Upload JPG/PNG", accept_multiple_files=True)
-    if files:
+    uploads = st.file_uploader("Upload JPG/PNG thumbnails", accept_multiple_files=True)
+    if uploads:
         new = []
-        for f in files:
+        for f in uploads:
             raw = f.read()
             if not any(i["name"]==f.name and i["size"]==len(raw)
                        for i in st.session_state.imgs):
@@ -114,11 +110,11 @@ def main():
         if new and st.button(f"Analyze {len(new)} New"):
             with st.spinner("Analyzing…"):
                 for name, raw in new:
-                    analysis = analyze_image(client, to_b64(raw), name)
+                    j = analyze_image(client, to_b64(raw), name)
                     st.session_state.imgs.append({
                         "name": name,
                         "size": len(raw),
-                        "analysis": analysis
+                        "analysis": j
                     })
             st.success("Done.")
 
@@ -133,14 +129,14 @@ def main():
                 analyses = [i["analysis"] for i in st.session_state.imgs]
                 result = synthesize(client, analyses)
             st.subheader("Common Patterns")
-            for bullet in result["analysis_summary"]:
-                st.write(f"- {bullet}")
+            for b in result["analysis_summary"]:
+                st.write(f"- {b}")
             st.subheader("Generated Thumbnail")
-            img = generate_image(client, result["generation_prompt"])
-            st.image(img, use_column_width=True)
+            thumb = generate_image(client, result["generation_prompt"])
+            st.image(thumb, use_column_width=True)
             st.markdown(f"**Prompt:** `{result['generation_prompt']}`")
 
-    st.sidebar.info("Uses only OpenAI: GPT-4 Vision → small JSON → gpt_image_1")
+    st.sidebar.info("Uses only OpenAI: GPT-4 Vision for analysis, gpt_image_1 for generation.")
 
 if __name__ == "__main__":
     main()
