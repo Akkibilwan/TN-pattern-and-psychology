@@ -158,7 +158,7 @@ if st.button("Generate Sample Thumbnail"):
     if not custom_prompt.strip():
         st.error("Please enter a non-empty prompt above.")
     else:
-        with st.spinner("Generating with gpt-image-1…"):
+        with st.spinner("Generating with gpt-image-1"):
             img_resp = client.images.generate(
                 model="gpt-image-1",
                 prompt=custom_prompt,
