@@ -4,10 +4,8 @@ import os, io, base64, json
 from PIL import Image
 import openai
 
-# ——— Page config —————————————————————————————————————————————————————————
 st.set_page_config(page_title="Thumbnail Insights & Wireframe Generator", layout="wide")
 
-# ——— Helpers —————————————————————————————————————————————————————————————
 def get_openai_client():
     key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
     if not key:
@@ -20,15 +18,7 @@ def get_openai_client():
 def to_b64(data: bytes) -> str:
     return base64.b64encode(data).decode()
 
-# ——— 1) Per-thumbnail analysis ——————————————————————————————————————————————
 def analyze_thumbnail(client, b64str: str, name: str) -> dict:
-    """
-    Returns a JSON with:
-      - patterns: 3–5 short phrases describing visual patterns
-      - psychology: 3–5 short phrases describing psychological strategies
-      - pros: 3 reasons why this thumbnail would work on YouTube
-      - cons: 3 reasons why it might NOT work
-    """
     system = "You are an expert in visual communication and marketing psychology. Respond ONLY with JSON."
     user_content = [
         {"type": "text", "text": f"Thumbnail '{name}': extract exactly four keys in JSON:"},
@@ -49,25 +39,17 @@ def analyze_thumbnail(client, b64str: str, name: str) -> dict:
     text = resp.choices[0].message.content
     try:
         parsed = json.loads(text)
-        # Ensure keys exist
         return {
-            "patterns":      parsed.get("patterns", []),
-            "psychology":    parsed.get("psychology", []),
-            "pros":          parsed.get("pros", []),
-            "cons":          parsed.get("cons", [])
+            "patterns":   parsed.get("patterns", []),
+            "psychology": parsed.get("psychology", []),
+            "pros":       parsed.get("pros", []),
+            "cons":       parsed.get("cons", [])
         }
     except json.JSONDecodeError:
         st.warning(f"⚠️ Failed to parse analysis JSON for '{name}'.")
         return {"patterns":[], "psychology":[], "pros":[], "cons":[]}
 
-# ——— 2) Synthesize common insights & build wireframe prompt ——————————————————————
 def synthesize_insights(client, analyses: list[dict]) -> dict:
-    """
-    From up to 5 per-thumbnail JSONs, returns JSON with:
-      - common_patterns: 3 bullet-points
-      - common_psychology: 3 bullet-points
-      - wireframe_prompt: a concise prompt to generate a thumbnail wireframe capturing those patterns & psychology
-    """
     subset = analyses[-5:]
     system = "You are a design and marketing-psychology expert. Respond ONLY with JSON."
     user_text = (
@@ -81,7 +63,7 @@ def synthesize_insights(client, analyses: list[dict]) -> dict:
         messages=[
             {"role":"system","content":system},
             {"role":"user","content":user_text},
-            {"role":"assistant","content":""},  # few-shot blank
+            {"role":"assistant","content":""},
             {"role":"user","content":json.dumps(subset)}
         ],
         max_tokens=300
@@ -97,10 +79,10 @@ def synthesize_insights(client, analyses: list[dict]) -> dict:
             "wireframe_prompt":  text
         }
 
-# ——— 3) Generate the wireframe image ——————————————————————————————————————————
 def generate_wireframe(client, prompt: str) -> Image.Image:
+    # <-- updated model name here:
     resp = client.images.generate(
-        model="gpt_image_1",
+        model="gpt-image-1",
         prompt=prompt,
         size="1024x576",
         n=1
@@ -108,13 +90,12 @@ def generate_wireframe(client, prompt: str) -> Image.Image:
     img_bytes = base64.b64decode(resp.data[0].b64_json)
     return Image.open(io.BytesIO(img_bytes))
 
-# ——— Streamlit UI —————————————————————————————————————————————————————
 def main():
     st.title("🖼️ Thumbnail Insights & Wireframe Generator")
     st.markdown(
-        "1. Upload related thumbnails  "
-        "2. Analyze each for patterns, psychology, pros/cons  "
-        "3. Synthesize common insights  "
+        "1. Upload related thumbnails  \n"
+        "2. Analyze each for patterns, psychology, pros/cons  \n"
+        "3. Synthesize common insights  \n"
         "4. Generate a wireframe image based on those insights"
     )
 
@@ -123,7 +104,7 @@ def main():
         return
 
     if "data" not in st.session_state:
-        st.session_state.data = []  # list of {name, size, analysis}
+        st.session_state.data = []
 
     uploads = st.file_uploader("Upload JPG/PNG thumbnails", accept_multiple_files=True)
     if uploads:
@@ -173,7 +154,7 @@ def main():
 
     st.sidebar.info(
         "Uses GPT-4 Vision to analyze thumbnails, then GPT-4 to synthesize insights,\n"
-        "and gpt_image_1 to generate a simple wireframe image."
+        "and gpt-image-1 to generate a simple wireframe image."
     )
 
 if __name__ == "__main__":
