@@ -35,8 +35,8 @@ def analyze_image(client, image_b64: str, filename: str) -> str:
     system = "You are an expert in visual communication, marketing psychology, and digital design."
     user = (
         f"Analyze this YouTube thumbnail image named '{filename}' in detail. "
-        f"Describe its main subject, background, style, colors, any text present, composition, mood, "
-        f"and any psychological hooks used to grab attention."
+        "Describe its main subject, background, style, colors, any text present, composition, mood, "
+        "and any psychological hooks used to grab attention."
     )
     resp = client.chat.completions.create(
         model="gpt-4o",
@@ -50,21 +50,37 @@ def analyze_image(client, image_b64: str, filename: str) -> str:
     return resp.choices[0].message.content.strip()
 
 def synthesize_patterns(client, analyses: list[str]) -> str:
-    """Identify common patterns & psychology across all analyzed thumbnails."""
+    """
+    Identify common patterns & psychology across all analyzed thumbnails,
+    with truncation to avoid context-length errors.
+    """
+    # truncate each individual analysis to max_chars
+    max_chars = 2000
+    truncated = []
+    for desc in analyses:
+        if len(desc) > max_chars:
+            truncated.append(desc[:max_chars] + "\n…(truncated)")
+        else:
+            truncated.append(desc)
+    # join and then truncate whole payload
+    joined = "\n\n---\n\n".join(f"Analysis #{i+1}:\n{d}" for i, d in enumerate(truncated))
+    max_total = 100000
+    if len(joined) > max_total:
+        joined = joined[:max_total] + "\n\n…(overall analyses truncated to fit context limits.)"
+
     prompt = """You are an expert in visual communication, marketing psychology, and digital design.
 Your task is to analyze a given set of thumbnail analyses, identifying common patterns and the underlying psychological strategies employed to capture attention and convey a message.
 
-For each analysis provided, you have the detailed breakdown. Now:
+For all provided analyses:
 1. Summarize the dominant visual patterns across all thumbnails.
 2. Describe the shared psychological hooks (e.g., urgency, curiosity, drama).
 3. Infer the target audience and how these techniques appeal to them.
 4. Finally, craft a single, concise prompt that could be fed to an image-generation model to recreate a thumbnail using those patterns and psychology.
 
-Return your answer in two parts separated by a JSON object with keys:
-- "analysis_summary": the text summary (with numbered points for clarity).
-- "generation_prompt": the final single prompt string for image generation.
+Return your answer as JSON with keys:
+- "analysis_summary": the text summary (use numbered points).
+- "generation_prompt": the single prompt string for image generation.
 """
-    joined = "\n\n---\n\n".join(f"Analysis #{i+1}:\n{a}" for i, a in enumerate(analyses))
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
@@ -93,7 +109,7 @@ def main():
     st.markdown(
         "Upload one or more thumbnail images. The app will:\n"
         "1. Analyze each with GPT-4 Vision for visual & psychological breakdown.\n"
-        "2. Identify common patterns & hooks across all thumbnails.\n"
+        "2. Identify common patterns & hooks across all thumbnails (with safe truncation).\n"
         "3. Generate a brand-new thumbnail replicating that psychology using gpt_image_1."
     )
 
@@ -114,21 +130,19 @@ def main():
         new = []
         for f in uploads:
             data = f.read()
-            # avoid re-analysis by filename+size
             if not any(a['name']==f.name and a['size']==f.size for a in st.session_state.analyses):
                 new.append((f.name, data))
-        if new:
-            if st.button(f"Analyze {len(new)} New Image(s)"):
-                with st.spinner("Analyzing..."):
-                    for name, img_bytes in new:
-                        b64 = encode_image_to_base64(img_bytes)
-                        desc = analyze_image(client, b64, name)
-                        st.session_state.analyses.append({
-                            "name": name,
-                            "size": len(img_bytes),
-                            "desc": desc
-                        })
-                st.success("Analysis complete!")
+        if new and st.button(f"Analyze {len(new)} New Image(s)"):
+            with st.spinner("Analyzing..."):
+                for name, img_bytes in new:
+                    b64 = encode_image_to_base64(img_bytes)
+                    desc = analyze_image(client, b64, name)
+                    st.session_state.analyses.append({
+                        "name": name,
+                        "size": len(img_bytes),
+                        "desc": desc
+                    })
+            st.success("Analysis complete!")
 
     if st.session_state.analyses:
         st.markdown("---")
@@ -143,12 +157,11 @@ def main():
             with st.spinner("Synthesizing patterns..."):
                 all_descs = [a['desc'] for a in st.session_state.analyses]
                 synthesis = synthesize_patterns(client, all_descs)
-                # attempt to parse JSON
                 try:
                     obj = json.loads(synthesis)
                     summary = obj.get("analysis_summary", "")
                     gen_prompt = obj.get("generation_prompt", "")
-                except Exception:
+                except json.JSONDecodeError:
                     summary = synthesis
                     gen_prompt = synthesis
 
