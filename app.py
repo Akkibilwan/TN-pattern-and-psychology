@@ -7,10 +7,7 @@ import base64
 # —————————————————————————————————————————————————————————————
 # CONFIG
 # —————————————————————————————————————————————————————————————
-# Instantiate the new v1 OpenAI client
-client = OpenAI(
-    api_key=st.secrets["OPENAI_API_KEY"]
-)
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
 
 st.set_page_config(
     page_title="Thumbnail Analyzer & Prompt Generator",
@@ -21,7 +18,7 @@ st.title("📸 Thumbnail Analyzer & Prompt-to-Image Generator")
 # —————————————————————————————————————————————————————————————
 # HELPER: GPT-4o VISION ANALYSIS
 # —————————————————————————————————————————————————————————————
-def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
+def analyze_with_gpt_vision(img_bytes: bytes) -> str:
     # 1) base64-encode the image
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     data_url = f"data:image/png;base64,{b64}"
@@ -36,7 +33,6 @@ def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
     }
     user = {
         "role": "user",
-        "name": filename,
         "content": [
             {
                 "type": "text",
@@ -62,9 +58,8 @@ def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
         ]
     }
 
-    # 3) call the API
     resp = client.chat.completions.create(
-        model="gpt-4o",           # or "gpt-4o-mini" if you prefer
+        model="gpt-4o",
         messages=[system, user],
         max_tokens=500
     )
@@ -92,7 +87,7 @@ for img_file in uploaded_files:
     st.image(img_file, use_column_width=True)
 
     img_bytes = img_file.read()
-    raw = analyze_with_gpt_vision(img_bytes, img_file.name)
+    raw = analyze_with_gpt_vision(img_bytes)
 
     st.write("🔍 Raw GPT-Vision response:")
     st.code(raw, language="")
@@ -114,13 +109,12 @@ for img_file in uploaded_files:
         st.code(json_str, language="json")
         continue
 
-    analysis = {
+    analyses.append({
         "file": img_file.name,
         "visual_breakdown": data.get("visual_breakdown", []),
         "psychology": data.get("psychology", ""),
         "pattern": data.get("pattern", "")
-    }
-    analyses.append(analysis)
+    })
     st.json(data)
 
 # —————————————————————————————————————————————————————————————
