@@ -1,128 +1,170 @@
+# app.py
 import streamlit as st
-import json
+import os
+import io
 import base64
+import json
+from PIL import Image
 import openai
 
 # --- Configuration & Credentials ---
 st.set_page_config(
-    page_title="Psychology-Driven Thumbnail Analyzer & Generator",
+    page_title="Multi-Thumbnail Analyzer & Prompt Generator",
     page_icon="🖼️",
     layout="wide"
 )
 
-# Custom Dark Mode CSS
-st.markdown("""
-<style>
-    .main { background-color: #0f0f0f; color: #f1f1f1; }
-    .stApp { background-color: #0f0f0f; }
-    h1, h2, h3, h4, h5, h6 { color: #f1f1f1; font-family: 'Roboto', sans-serif; }
-    p, li, div, label { color: #aaaaaa; }
-    .stButton>button {
-        background-color: #303030;
-        color: #f1f1f1;
-        border: 1px solid #505050;
-    }
-    .stButton>button:hover {
-        background-color: #505050;
-        border: 1px solid #707070;
-    }
-    .uploaded-image-container {
-        border: 1px solid #303030;
-        border-radius: 8px;
-        padding: 15px;
-        margin-bottom: 20px;
-        background-color: #181818;
-    }
-</style>
-""", unsafe_allow_html=True)
+def setup_openai_client():
+    """Initialize and return an OpenAI client."""
+    api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        api_key = st.sidebar.text_input(
+            "Enter your OpenAI API key:", type="password", key="openai_key_input"
+        )
+    if not api_key:
+        st.sidebar.error("OpenAI API key is required for analysis and image generation.")
+        return None
+    return openai.OpenAI(api_key=api_key)
 
-# --- OpenAI Setup ---
-def setup_openai():
-    api_key = st.sidebar.text_input("OpenAI API Key", type="password")
-    if api_key:
-        openai.api_key = api_key
-    else:
-        st.sidebar.error("Please enter your OpenAI API key.")
+# --- Helpers ---
+def encode_image_to_base64(image_bytes: bytes) -> str:
+    return base64.b64encode(image_bytes).decode("utf-8")
 
-# --- Utility Functions ---
-def encode_image_to_base64(bytes_data):
-    return base64.b64encode(bytes_data).decode('utf-8')
-
-# --- Analysis and Generation ---
-def analyze_psychology(image_b64):
-    prompt = (
-        "You are an expert in visual communication, marketing psychology, and digital design. "
-        "Analyze the given thumbnail (provided as base64). "
-        "Identify its psychological strategies and return a JSON with keys: "
-        "'dominant_colors', 'composition', 'text_style', 'background_effects', 'branding', "
-        "'emotional_impact', 'contrast_usage', 'intrigue_narrative'."
+def analyze_image(client, image_b64: str, filename: str) -> str:
+    """Use GPT-4 Vision to analyze a single thumbnail."""
+    system = "You are an expert in visual communication, marketing psychology, and digital design."
+    user = (
+        f"Analyze this YouTube thumbnail image named '{filename}' in detail. "
+        f"Describe its main subject, background, style, colors, any text present, composition, mood, "
+        f"and any psychological hooks used to grab attention."
     )
-    resp = openai.ChatCompletion.create(
+    resp = client.chat.completions.create(
         model="gpt-4o",
-        messages=[{"role": "user", "content": prompt + "\n\n" + image_b64}],
-        max_tokens=500
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+            {"role": "user", "content": f"<IMAGE_DATA>data:image/jpeg;base64,{image_b64}</IMAGE_DATA>"}
+        ],
+        max_tokens=800
     )
-    try:
-        return json.loads(resp.choices[0].message.content)
-    except json.JSONDecodeError:
-        return {"error": resp.choices[0].message.content}
+    return resp.choices[0].message.content.strip()
 
+def synthesize_patterns(client, analyses: list[str]) -> str:
+    """Identify common patterns & psychology across all analyzed thumbnails."""
+    prompt = """You are an expert in visual communication, marketing psychology, and digital design.
+Your task is to analyze a given set of thumbnail analyses, identifying common patterns and the underlying psychological strategies employed to capture attention and convey a message.
 
-def synthesize_pattern(analyses):
-    prompt = (
-        "You are an expert in marketing psychology. Given these analyses JSON list, "
-        "identify common visual patterns and psychological strategies, and output a concise prompt "
-        "to generate a new thumbnail replicating the same psychology:\n"
-        + json.dumps(analyses)
-    )
-    resp = openai.ChatCompletion.create(
+For each analysis provided, you have the detailed breakdown. Now:
+1. Summarize the dominant visual patterns across all thumbnails.
+2. Describe the shared psychological hooks (e.g., urgency, curiosity, drama).
+3. Infer the target audience and how these techniques appeal to them.
+4. Finally, craft a single, concise prompt that could be fed to an image-generation model to recreate a thumbnail using those patterns and psychology.
+
+Return your answer in two parts separated by a JSON object with keys:
+- "analysis_summary": the text summary (with numbered points for clarity).
+- "generation_prompt": the final single prompt string for image generation.
+"""
+    joined = "\n\n---\n\n".join(f"Analysis #{i+1}:\n{a}" for i, a in enumerate(analyses))
+    resp = client.chat.completions.create(
         model="gpt-4o",
-        messages=[{"role": "user", "content": prompt}],
-        max_tokens=300
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": joined}
+        ],
+        max_tokens=1000
     )
-    return resp.choices[0].message.content
+    return resp.choices[0].message.content.strip()
 
-
-def generate_thumbnail(cue):
-    resp = openai.Image.create(
+def generate_thumbnail(client, prompt: str) -> Image.Image:
+    """Use gpt_image_1 to generate a new thumbnail based on the synthesized prompt."""
+    resp = client.images.generate(
         model="gpt_image_1",
-        prompt=cue,
-        n=1,
-        size="1024x576"
+        prompt=prompt,
+        size="1024x576",  # 16:9 aspect
+        n=1
     )
-    return resp['data'][0]['url']
+    b64 = resp.data[0].b64_json
+    img_bytes = base64.b64decode(b64)
+    return Image.open(io.BytesIO(img_bytes))
 
-# --- Main Application ---
+# --- Main App ---
 def main():
-    st.title("🖼️ Psychology-Driven Thumbnail Analyzer & Generator")
-    setup_openai()
+    st.title("🖼️ Multi-Thumbnail Analyzer & Prompt Generator")
+    st.markdown(
+        "Upload one or more thumbnail images. The app will:\n"
+        "1. Analyze each with GPT-4 Vision for visual & psychological breakdown.\n"
+        "2. Identify common patterns & hooks across all thumbnails.\n"
+        "3. Generate a brand-new thumbnail replicating that psychology using gpt_image_1."
+    )
 
-    uploaded = st.file_uploader(
-        "Upload thumbnail images (JPG/PNG)",
-        type=["jpg","png","jpeg"],
+    client = setup_openai_client()
+    if not client:
+        return
+
+    if 'analyses' not in st.session_state:
+        st.session_state.analyses = []
+
+    uploads = st.file_uploader(
+        "Upload thumbnail images (JPG, PNG)", 
+        type=["jpg", "png", "jpeg"],
         accept_multiple_files=True
     )
 
-    if uploaded:
-        if st.button("Analyze & Generate"):
-            analyses = []
-            for file in uploaded:
-                bytes_data = file.read()
-                b64 = encode_image_to_base64(bytes_data)
-                analysis = analyze_psychology(b64)
-                analyses.append(analysis)
-                st.subheader(f"Analysis for {file.name}")
-                st.json(analysis)
+    if uploads:
+        new = []
+        for f in uploads:
+            data = f.read()
+            # avoid re-analysis by filename+size
+            if not any(a['name']==f.name and a['size']==f.size for a in st.session_state.analyses):
+                new.append((f.name, data))
+        if new:
+            if st.button(f"Analyze {len(new)} New Image(s)"):
+                with st.spinner("Analyzing..."):
+                    for name, img_bytes in new:
+                        b64 = encode_image_to_base64(img_bytes)
+                        desc = analyze_image(client, b64, name)
+                        st.session_state.analyses.append({
+                            "name": name,
+                            "size": len(img_bytes),
+                            "desc": desc
+                        })
+                st.success("Analysis complete!")
 
-            cue = synthesize_pattern(analyses)
-            st.subheader("Synthesized Generation Prompt")
-            st.text(cue)
+    if st.session_state.analyses:
+        st.markdown("---")
+        st.subheader("🔍 Individual Analyses")
+        for a in st.session_state.analyses:
+            st.markdown(f"**{a['name']}**")
+            with st.expander("View analysis"):
+                st.write(a['desc'])
 
-            st.subheader("Generated Thumbnail")
-            url = generate_thumbnail(cue)
-            st.image(url, use_column_width=True, caption="New Thumbnail")
-    else:
-        st.info("Please upload one or more thumbnail images.")
+        st.markdown("---")
+        if st.button("Identify Patterns & Generate Thumbnail"):
+            with st.spinner("Synthesizing patterns..."):
+                all_descs = [a['desc'] for a in st.session_state.analyses]
+                synthesis = synthesize_patterns(client, all_descs)
+                # attempt to parse JSON
+                try:
+                    obj = json.loads(synthesis)
+                    summary = obj.get("analysis_summary", "")
+                    gen_prompt = obj.get("generation_prompt", "")
+                except Exception:
+                    summary = synthesis
+                    gen_prompt = synthesis
+
+            st.subheader("📊 Common Patterns & Psychology")
+            st.markdown(summary)
+
+            st.subheader("🎨 Generated Thumbnail")
+            with st.spinner("Generating image..."):
+                thumb = generate_thumbnail(client, gen_prompt)
+                st.image(thumb, use_column_width=True)
+                st.markdown(f"**Prompt used:**\n```\n{gen_prompt}\n```")
+
+    st.sidebar.markdown("---")
+    st.sidebar.info(
+        "This app uses only OpenAI APIs: GPT-4 Vision for analysis and gpt_image_1 for thumbnail generation."
+    )
 
 if __name__ == "__main__":
     main()
