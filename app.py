@@ -9,60 +9,63 @@ import openai
 
 # --- Configuration & Credentials ---
 st.set_page_config(
-    page_title="Multi-Thumbnail Analyzer & Prompt Generator",
+    page_title="Thumbnail Analyzer & Generator",
     page_icon="🖼️",
     layout="wide"
 )
 
 def setup_openai_client():
-    api_key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not api_key:
-        api_key = st.sidebar.text_input(
-            "OpenAI API key:", type="password", key="openai_key_input"
-        )
-    if not api_key:
-        st.sidebar.error("API key is required.")
+    key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not key:
+        key = st.sidebar.text_input("OpenAI API key:", type="password", key="key_input")
+    if not key:
+        st.sidebar.error("API key required.")
         return None
-    return openai.OpenAI(api_key=api_key)
+    return openai.OpenAI(api_key=key)
 
-def encode_image_to_base64(image_bytes: bytes) -> str:
-    return base64.b64encode(image_bytes).decode("utf-8")
+def encode_b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
 
-def analyze_image(client, image_b64: str, filename: str) -> str:
+def analyze_image(client, b64: str, name: str) -> str:
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": "You are an expert in visual communication and marketing psychology."},
-            {"role": "user", "content": f"Analyze '{filename}' for subject, colors, composition, text, mood, and psychological hooks."},
-            {"role": "user", "content": f"<IMAGE_DATA>data:image/jpeg;base64,{image_b64}</IMAGE_DATA>"},
+            {"role":"system", "content":"You are an expert in visual communication and marketing psychology."},
+            {"role":"user", "content":f"Analyze '{name}' for subject, colors, composition, text, mood, and psychological hooks."},
+            {"role":"user", "content":f"<IMAGE_DATA>data:image/jpeg;base64,{b64}</IMAGE_DATA>"},
         ],
         max_tokens=600
     )
     return resp.choices[0].message.content.strip()
 
 def synthesize_patterns(client, analyses: list[str]) -> dict:
-    # Truncate each analysis to ~1500 chars to keep context small
-    truncated = [(d[:1500] + "…") if len(d)>1500 else d for d in analyses]
-    joined = "\n---\n".join(f"Analysis #{i+1}:\n{d}" for i, d in enumerate(truncated))
+    # only use up to the last 10 analyses
+    subset = analyses[-10:]
+    # truncate each to ~700 chars
+    truncated = [(d[:700] + "…") if len(d)>700 else d for d in subset]
+    joined = "\n---\n".join(f"Analysis #{i+1}:\n{d}" for i,d in enumerate(truncated))
+    # ensure joined is under ~40000 chars
+    if len(joined) > 40000:
+        joined = joined[:40000] + "\n…(truncated)·"
     prompt = (
-        "You are an expert in marketing psychology and design. "
-        "From the provided analyses, (1) summarize common visual patterns and psychological hooks, "
-        "(2) produce one concise image-generation prompt to recreate that style. "
+        "You are an expert in marketing psychology and design.\n"
+        "From these analyses:\n"
+        "1) Summarize common visual patterns & psychological hooks.\n"
+        "2) Provide one concise image-generation prompt to recreate that style.\n"
         "Return JSON with keys \"analysis_summary\" and \"generation_prompt\"."
     )
     resp = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": joined},
+            {"role":"system", "content":prompt},
+            {"role":"user", "content":joined},
         ],
         max_tokens=800
     )
+    text = resp.choices[0].message.content.strip()
     try:
-        return json.loads(resp.choices[0].message.content)
+        return json.loads(text)
     except json.JSONDecodeError:
-        # Fallback: wrap entire text into summary
-        text = resp.choices[0].message.content
         return {"analysis_summary": text, "generation_prompt": text}
 
 def generate_thumbnail(client, prompt: str) -> Image.Image:
@@ -72,58 +75,54 @@ def generate_thumbnail(client, prompt: str) -> Image.Image:
         size="1024x576",
         n=1
     )
-    img_bytes = base64.b64decode(resp.data[0].b64_json)
-    return Image.open(io.BytesIO(img_bytes))
+    img = base64.b64decode(resp.data[0].b64_json)
+    return Image.open(io.BytesIO(img))
 
 def main():
     st.title("🖼️ Thumbnail Analyzer & Generator")
-    st.markdown(
-        "1. Upload thumbnails → 2. Get GPT-4 Vision analyses → "
-        "3. Synthesize common patterns → 4. Generate new thumbnail with gpt_image_1."
-    )
+    st.write("Upload JPG/PNG thumbnails → GPT-4 Vision analyses → synthesize patterns → generate new thumbnail.")
 
     client = setup_openai_client()
     if not client:
         return
 
-    if 'analyses' not in st.session_state:
-        st.session_state.analyses = []
+    if "data" not in st.session_state:
+        st.session_state.data = []
 
-    uploads = st.file_uploader(
-        "Upload JPG/PNG thumbnails", type=["jpg","png","jpeg"], accept_multiple_files=True
-    )
-
+    uploads = st.file_uploader("Upload thumbnails", type=["jpg","png","jpeg"], accept_multiple_files=True)
     if uploads:
-        new_files = [
-            (f.name, f.read()) for f in uploads
-            if not any(a['name']==f.name and a['size']==f.size for a in st.session_state.analyses)
-        ]
-        if new_files and st.button(f"Analyze {len(new_files)} New"):
-            with st.spinner("Analyzing…"):
-                for name, data in new_files:
-                    b64 = encode_image_to_base64(data)
+        new = []
+        for f in uploads:
+            raw = f.read()
+            if not any(d["name"]==f.name and d["size"]==len(raw) for d in st.session_state.data):
+                new.append((f.name, raw))
+        if new and st.button(f"Analyze {len(new)} New"):
+            with st.spinner("Analyzing..."):
+                for name, raw in new:
+                    b64 = encode_b64(raw)
                     desc = analyze_image(client, b64, name)
-                    st.session_state.analyses.append({"name": name, "size": len(data), "desc": desc})
-            st.success("Done!")
+                    st.session_state.data.append({"name":name,"size":len(raw),"desc":desc})
+            st.success("Done.")
 
-    if st.session_state.analyses:
+    if st.session_state.data:
         st.markdown("### Individual Analyses")
-        for a in st.session_state.analyses:
-            st.markdown(f"**{a['name']}**")
+        for item in st.session_state.data:
+            st.markdown(f"**{item['name']}**")
             with st.expander("View analysis"):
-                st.write(a['desc'])
+                st.write(item["desc"])
 
         if st.button("Synthesize & Generate"):
-            with st.spinner("Synthesizing…"):
-                synthesis = synthesize_patterns(client, [a['desc'] for a in st.session_state.analyses])
+            with st.spinner("Synthesizing patterns..."):
+                analyses = [d["desc"] for d in st.session_state.data]
+                result = synthesize_patterns(client, analyses)
             st.subheader("Common Patterns & Psychology")
-            st.write(synthesis["analysis_summary"])
+            st.write(result["analysis_summary"])
             st.subheader("Generated Thumbnail")
-            thumb = generate_thumbnail(client, synthesis["generation_prompt"])
+            thumb = generate_thumbnail(client, result["generation_prompt"])
             st.image(thumb, use_column_width=True)
-            st.markdown(f"**Prompt:** `{synthesis['generation_prompt']}`")
+            st.markdown(f"**Prompt:** `{result['generation_prompt']}`")
 
-    st.sidebar.info("Uses only OpenAI: GPT-4 Vision for analysis and gpt_image_1 for generation.")
+    st.sidebar.info("Uses only OpenAI: GPT-4 Vision for analysis & gpt_image_1 for generation.")
 
-if __name__ == "__main__":
+if __name__=="__main__":
     main()
