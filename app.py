@@ -2,6 +2,7 @@ import streamlit as st
 import openai
 import re
 import json
+import base64
 
 # —————————————————————————————————————————————————————————————
 # CONFIG
@@ -15,6 +16,58 @@ st.set_page_config(
 st.title("📸 Thumbnail Analyzer & Prompt-to-Image Generator")
 
 # —————————————————————————————————————————————————————————————
+# HELPER: GPT-4o VISION ANALYSIS
+# —————————————————————————————————————————————————————————————
+def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
+    """
+    Sends a base64-embedded image to GPT-4o Vision and returns
+    its raw JSON-style response as text.
+    """
+    # 1) Encode image as base64 data URL
+    b64 = base64.b64encode(img_bytes).decode("utf-8")
+    data_url = f"data:image/png;base64,{b64}"
+
+    # 2) Build multimodal messages
+    system = {
+        "role": "system",
+        "content": (
+            "You are an expert in visual communication, marketing psychology, and digital design.\n"
+            "Respond *only* with a single JSON object—no markdown or extra text."
+        ),
+    }
+    user = {
+        "role": "user",
+        "content": [
+            {
+                "type": "text",
+                "text": (
+                    "Analyze this YouTube thumbnail and output JSON with exactly these keys:\n"
+                    "  • visual_breakdown: a list of key visual elements\n"
+                    "  • psychology: the primary attention-grabbing tactics\n"
+                    "  • pattern: the overall design pattern or layout\n\n"
+                    "Example:\n"
+                    "```json\n"
+                    "{\n"
+                    '  "visual_breakdown": ["bold text", "high-contrast colors"],\n'
+                    '  "psychology": "curiosity gap by showing partial info",\n'
+                    '  "pattern": "text on left, face on right"\n'
+                    "}\n"
+                    "```"
+                )
+            },
+            {"type": "image_url", "image_url": {"url": data_url}}
+        ],
+        "name": filename
+    }
+
+    resp = openai.ChatCompletion.create(
+        model="gpt-4o",
+        messages=[system, user],
+        max_tokens=500,
+    )
+    return resp.choices[0].message.content
+
+# —————————————————————————————————————————————————————————————
 # 1) UPLOAD
 # —————————————————————————————————————————————————————————————
 uploaded_files = st.file_uploader(
@@ -24,69 +77,36 @@ uploaded_files = st.file_uploader(
 )
 
 if not uploaded_files:
-    st.info("Start by uploading at least one thumbnail above.")
+    st.info("Please upload at least one thumbnail to get started.")
     st.stop()
 
 # —————————————————————————————————————————————————————————————
-# 2) ANALYZE EACH VIA GPT-4o VISION
+# 2) ANALYZE WITH GPT-4o VISION
 # —————————————————————————————————————————————————————————————
 analyses = []
+
 for img_file in uploaded_files:
     st.subheader(f"Analysis for: {img_file.name}")
     st.image(img_file, use_column_width=True)
 
     img_bytes = img_file.read()
+    raw = analyze_with_gpt_vision(img_bytes, img_file.name)
 
-    system_prompt = (
-        "You are an expert in visual communication, marketing psychology, and digital design.  "
-        "Respond *only* with a single JSON object – no markdown or extra text."
-    )
-    user_prompt = (
-        "Analyze this thumbnail and return a JSON object with exactly these keys:\n"
-        "  • visual_breakdown (list of key visual elements),\n"
-        "  • psychology (the attention-grabbing tactics),\n"
-        "  • pattern (the overall design pattern).\n\n"
-        "Example:\n"
-        "```json\n"
-        "{\n"
-        '  "visual_breakdown": ["bold text", "high-contrast colors"],\n'
-        '  "psychology": "curiosity gap by showing partial info",\n'
-        '  "pattern": "text on left, face on right"\n'
-        "}\n"
-        "```"
-    )
-    resp = openai.ChatCompletion.create(
-        model="gpt-4o",
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt, "name": img_file.name}
-        ],
-        files=[{
-            "file": img_bytes,
-            "filename": img_file.name,
-            "content_type": img_file.type
-        }]
-    )
-
-    raw = resp.choices[0].message.content
-    st.write("🔍 Raw GPT response:")
+    st.write("🔍 Raw GPT-Vision response:")
     st.code(raw, language="")
 
-    # ————————————————— Extract JSON via naive find —————————————————
-    text_response = raw.strip()
-    json_start = text_response.find("{")
-    json_end = text_response.rfind("}") + 1
-    if json_start != -1 and json_end != -1:
-        json_str = text_response[json_start:json_end]
-    else:
-        json_str = raw
+    # Extract the first { … } block
+    start = raw.find("{")
+    end = raw.rfind("}") + 1
+    if start == -1 or end == 0:
+        st.error("⚠️ No JSON object found in the response.")
+        continue
+    json_str = raw[start:end]
 
-    # Optional: remove trailing commas before ] or }
+    # Strip trailing commas before } or ]
     json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
 
-    # —————————————————————————————————————————————————————————————
-    # PARSE or SHOW ERROR
-    # —————————————————————————————————————————————————————————————
+    # Parse or show error
     try:
         analysis = json.loads(json_str)
     except json.JSONDecodeError as e:
@@ -94,20 +114,25 @@ for img_file in uploaded_files:
         st.code(json_str, language="json")
         continue
 
-    analyses.append({"file": img_file.name, **analysis})
+    analyses.append({
+        "file": img_file.name,
+        "visual_breakdown": analysis.get("visual_breakdown", []),
+        "psychology": analysis.get("psychology", ""),
+        "pattern": analysis.get("pattern", "")
+    })
     st.json(analysis)
 
 # —————————————————————————————————————————————————————————————
-# 3) SYNTHESIZE COMMON PATTERNS & PSYCHOLOGY
+# 3) SYNTHESIZE COMMON PATTERNS & PSYCHOLOGIES
 # —————————————————————————————————————————————————————————————
 st.markdown("---")
 st.header("✨ Common Patterns & Psychological Strategies")
 
-patterns = [a["pattern"] for a in analyses if "pattern" in a]
-psychologies = [a["psychology"] for a in analyses if "psychology" in a]
+patterns = sorted({a["pattern"] for a in analyses if a["pattern"]})
+psychologies = sorted({a["psychology"] for a in analyses if a["psychology"]})
 
-st.write(f"**Patterns:** {sorted(set(patterns))}")
-st.write(f"**Psychologies:** {sorted(set(psychologies))}")
+st.write("**Patterns:**", patterns or "None detected")
+st.write("**Psychologies:**", psychologies or "None detected")
 
 # —————————————————————————————————————————————————————————————
 # 4) AUTO-GENERATE A PROMPT TEMPLATE
@@ -120,8 +145,8 @@ combined = "\n\n".join(
     for a in analyses
 )
 default_template = (
-    "Use the following thumbnail analyses to craft a single prompt for GPT-4o-vision that would "
-    "reproduce these visual patterns and psychological hooks when generating a new image:\n\n"
+    "Use these thumbnail analyses to craft a single prompt for GPT-4o Vision that reproduces "
+    "the visual patterns and psychological hooks when generating a new image:\n\n"
     + combined
 )
 st.code(default_template, language="markdown")
@@ -133,11 +158,11 @@ custom_prompt = st.text_area(
 )
 
 # —————————————————————————————————————————————————————————————
-# 5) GENERATE A SAMPLE THUMBNAIL (gpt_image_1)
+# 5) GENERATE SAMPLE THUMBNAIL (gpt_image_1)
 # —————————————————————————————————————————————————————————————
 if st.button("Generate Sample Thumbnail"):
     if not custom_prompt.strip():
-        st.error("Please supply a non-empty prompt above.")
+        st.error("Please enter a non-empty prompt above.")
     else:
         with st.spinner("Generating with gpt_image_1…"):
             img_resp = openai.Image.create(
@@ -150,13 +175,13 @@ if st.button("Generate Sample Thumbnail"):
             st.image(url, caption="🎨 Generated Thumbnail")
 
 # —————————————————————————————————————————————————————————————
-# 6) VISUAL BREAKDOWN PROMPT FOR FUTURE USE
+# 6) READY-TO-USE VISUAL-BREAKDOWN PROMPT
 # —————————————————————————————————————————————————————————————
 st.markdown("---")
 st.header("🔧 Ready-to-Use Visual-Breakdown Prompt")
 
 breakdown_prompt = (
-    "You are an expert in visual communication, marketing psychology, and digital design.  "
+    "You are an expert in visual communication, marketing psychology, and digital design.\n"
     "Analyze a set of thumbnail images and structure your output under these headings:\n\n"
     "1. Visual Elements Breakdown\n"
     "2. Psychological Impact & Attention-Grabbing Techniques\n"
