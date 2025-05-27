@@ -99,7 +99,6 @@ for img_file in uploaded_files:
         st.error("⚠️ No JSON object found in the response.")
         continue
     json_str = raw[start:end]
-    # strip trailing commas
     json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
 
     try:
@@ -153,15 +152,15 @@ custom_prompt = st.text_area(
 )
 
 # —————————————————————————————————————————————————————————————
-# 5) GENERATE SAMPLE THUMBNAIL (gpt_image_1)
+# 5) GENERATE SAMPLE THUMBNAIL (gpt-image-1)
 # —————————————————————————————————————————————————————————————
 if st.button("Generate Sample Thumbnail"):
     if not custom_prompt.strip():
         st.error("Please enter a non-empty prompt above.")
     else:
-        with st.spinner("Generating with gpt_image_1…"):
+        with st.spinner("Generating with gpt-image-1…"):
             img_resp = client.images.generate(
-                model="gpt_image_1",
+                model="gpt-image-1",
                 prompt=custom_prompt,
                 n=1,
                 size="1024x1024"
