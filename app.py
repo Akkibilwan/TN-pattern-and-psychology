@@ -1,5 +1,5 @@
 import streamlit as st
-import openai
+from openai import OpenAI
 import re
 import json
 import base64
@@ -7,8 +7,10 @@ import base64
 # —————————————————————————————————————————————————————————————
 # CONFIG
 # —————————————————————————————————————————————————————————————
-# Use your new OpenAI Python v1.x interface:
-openai.api_key = st.secrets["OPENAI_API_KEY"]
+# Instantiate the new v1 OpenAI client
+client = OpenAI(
+    api_key=st.secrets["OPENAI_API_KEY"]
+)
 
 st.set_page_config(
     page_title="Thumbnail Analyzer & Prompt Generator",
@@ -17,33 +19,30 @@ st.set_page_config(
 st.title("📸 Thumbnail Analyzer & Prompt-to-Image Generator")
 
 # —————————————————————————————————————————————————————————————
-# HELPER: GPT-4o VISION ANALYSIS (new v1.x calls)
+# HELPER: GPT-4o VISION ANALYSIS
 # —————————————————————————————————————————————————————————————
 def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
-    """
-    Sends a base64-embedded image to GPT-4o Vision and returns
-    its raw JSON-style response as text.
-    """
-    # 1) Encode as data URL
+    # 1) base64-encode the image
     b64 = base64.b64encode(img_bytes).decode("utf-8")
     data_url = f"data:image/png;base64,{b64}"
 
-    # 2) Build the multimodal messages
+    # 2) build multimodal messages
     system = {
         "role": "system",
         "content": (
-            "You are an expert in visual communication, marketing psychology, and digital design.\n"
-            "Respond *only* with a single JSON object—no markdown or extra text."
-        ),
+            "You are an expert in visual communication, marketing psychology, "
+            "and digital design. Respond *only* with a single JSON object—no markdown or extra text."
+        )
     }
     user = {
         "role": "user",
+        "name": filename,
         "content": [
             {
                 "type": "text",
                 "text": (
                     "Analyze this YouTube thumbnail and output JSON with exactly these keys:\n"
-                    "  • visual_breakdown: a list of key visual elements\n"
+                    "  • visual_breakdown: list of key visual elements\n"
                     "  • psychology: the primary attention-grabbing tactics\n"
                     "  • pattern: the overall design pattern or layout\n\n"
                     "Example:\n"
@@ -56,14 +55,16 @@ def analyze_with_gpt_vision(img_bytes: bytes, filename: str) -> str:
                     "```"
                 )
             },
-            {"type": "image_url", "image_url": {"url": data_url}}
-        ],
-        "name": filename
+            {
+                "type": "image_url",
+                "image_url": {"url": data_url}
+            }
+        ]
     }
 
-    # NEW v1.x call:
-    resp = openai.chat.completions.create(
-        model="gpt-4o",
+    # 3) call the API
+    resp = client.chat.completions.create(
+        model="gpt-4o",           # or "gpt-4o-mini" if you prefer
         messages=[system, user],
         max_tokens=500
     )
@@ -77,18 +78,17 @@ uploaded_files = st.file_uploader(
     type=["png", "jpg", "jpeg"],
     accept_multiple_files=True
 )
-
 if not uploaded_files:
     st.info("Please upload at least one thumbnail to get started.")
     st.stop()
 
 # —————————————————————————————————————————————————————————————
-# 2) ANALYZE EACH WITH GPT-4o VISION
+# 2) ANALYZE WITH GPT-4o VISION
 # —————————————————————————————————————————————————————————————
 analyses = []
 
 for img_file in uploaded_files:
-    st.subheader(f"Analysis for: {img_file.name}")
+    st.subheader(f"🖼️ Analysis for: {img_file.name}")
     st.image(img_file, use_column_width=True)
 
     img_bytes = img_file.read()
@@ -97,32 +97,31 @@ for img_file in uploaded_files:
     st.write("🔍 Raw GPT-Vision response:")
     st.code(raw, language="")
 
-    # Extract first JSON object
+    # extract the first { … } block
     start = raw.find("{")
     end = raw.rfind("}") + 1
     if start == -1 or end == 0:
         st.error("⚠️ No JSON object found in the response.")
         continue
     json_str = raw[start:end]
-
-    # Remove any trailing commas before } or ]
+    # strip trailing commas
     json_str = re.sub(r",\s*([}\]])", r"\1", json_str)
 
-    # Parse or show error
     try:
-        analysis = json.loads(json_str)
+        data = json.loads(json_str)
     except json.JSONDecodeError as e:
         st.error(f"🛑 JSON parsing failed: {e}")
         st.code(json_str, language="json")
         continue
 
-    analyses.append({
+    analysis = {
         "file": img_file.name,
-        "visual_breakdown": analysis.get("visual_breakdown", []),
-        "psychology": analysis.get("psychology", ""),
-        "pattern": analysis.get("pattern", "")
-    })
-    st.json(analysis)
+        "visual_breakdown": data.get("visual_breakdown", []),
+        "psychology": data.get("psychology", ""),
+        "pattern": data.get("pattern", "")
+    }
+    analyses.append(analysis)
+    st.json(data)
 
 # —————————————————————————————————————————————————————————————
 # 3) SYNTHESIZE COMMON PATTERNS & PSYCHOLOGIES
@@ -137,7 +136,7 @@ st.write("**Patterns:**", patterns or "None detected")
 st.write("**Psychologies:**", psychologies or "None detected")
 
 # —————————————————————————————————————————————————————————————
-# 4) AUTO-GENERATE A PROMPT TEMPLATE
+# 4) AUTO-GENERATE PROMPT TEMPLATE
 # —————————————————————————————————————————————————————————————
 st.markdown("---")
 st.header("📝 Auto-Generated Prompt Template")
@@ -160,14 +159,14 @@ custom_prompt = st.text_area(
 )
 
 # —————————————————————————————————————————————————————————————
-# 5) GENERATE SAMPLE THUMBNAIL (using gpt_image_1)
+# 5) GENERATE SAMPLE THUMBNAIL (gpt_image_1)
 # —————————————————————————————————————————————————————————————
 if st.button("Generate Sample Thumbnail"):
     if not custom_prompt.strip():
         st.error("Please enter a non-empty prompt above.")
     else:
         with st.spinner("Generating with gpt_image_1…"):
-            img_resp = openai.images.generate(
+            img_resp = client.images.generate(
                 model="gpt_image_1",
                 prompt=custom_prompt,
                 n=1,
@@ -177,7 +176,7 @@ if st.button("Generate Sample Thumbnail"):
             st.image(url, caption="🎨 Generated Thumbnail")
 
 # —————————————————————————————————————————————————————————————
-# 6) READY-TO-USE VISUAL-BREAKDOWN PROMPT
+# 6) VISUAL-BREAKDOWN PROMPT FOR FUTURE USE
 # —————————————————————————————————————————————————————————————
 st.markdown("---")
 st.header("🔧 Ready-to-Use Visual-Breakdown Prompt")
