@@ -1,120 +1,113 @@
-# app.py
 import streamlit as st
-import os, io, base64
-from PIL import Image
 import openai
+import base64
+import json
 
-st.set_page_config(page_title="Thumbnail Analyzer", layout="wide")
+# Streamlit page configuration
+st.set_page_config(
+    page_title="Thumbnail Analyzer & Prompt Generator",
+    layout="wide"
+)
 
-def get_client():
-    key = st.secrets.get("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
-    if not key:
-        key = st.sidebar.text_input("OpenAI API Key", type="password")
-    if not key:
-        st.sidebar.error("API key required.")
-        return None
-    return openai.OpenAI(api_key=key)
+# Initialize OpenAI API key
+openai.api_key = st.secrets.get("OPENAI_API_KEY")
 
-def to_b64(data: bytes) -> str:
-    return base64.b64encode(data).decode()
-
-def analyze_image(client, b64str: str, name: str) -> str:
-    """
-    Returns plain-text analysis:
-      • Dominant Colors: red, blue…
-      • Psychological Hooks: urgency, curiosity…
-    """
-    sys = "You are an expert in visual communication and marketing psychology."
-    usr = (
-        f"Analyze image '{name}'.\n"
-        "Provide TWO bullet lists, plain text only:\n"
-        "- Dominant Colors (3–5 color names)\n"
-        "- Psychological Hooks (3–5 techniques: urgency, curiosity, etc.)\n"
-        f"<IMAGE_DATA>data:image/jpeg;base64,{b64str}</IMAGE_DATA>"
+# Function to analyze a single thumbnail image
+def analyze_thumbnail(image_bytes):
+    # Encode image to base64 for embedding in prompt
+    img_base64 = base64.b64encode(image_bytes).decode("utf-8")
+    
+    system_prompt = (
+        "You are an expert in visual communication, marketing psychology, and digital design. "
+        "Analyze the provided thumbnail image. "
+        "For the given image, provide structured JSON with these keys: "
+        "visual_elements, psychological_impact, emotional_resonance, intrigue_narrative, pattern_strategy."
     )
-    r = client.chat.completions.create(
+
+    user_prompt = (
+        f"Here is the thumbnail image in base64 format: data:image/png;base64,{img_base64}\n"
+        "Perform your analysis as specified."
+    )
+
+    response = openai.ChatCompletion.create(
+        model="gpt-4o",  # Vision-capable model
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ]
+    )
+
+    # Return the raw JSON content
+    return response.choices[0].message.content
+
+# Main application
+st.title("Thumbnail Analyzer & GPT Prompt Generator")
+
+# Upload multiple thumbnails
+uploaded_files = st.file_uploader(
+    "Upload thumbnail images (PNG, JPG, JPEG)",
+    type=["png", "jpg", "jpeg"],
+    accept_multiple_files=True
+)
+
+if uploaded_files:
+    analyses = {}
+    # Analyze each uploaded thumbnail
+    for uploaded_file in uploaded_files:
+        img_bytes = uploaded_file.read()
+        with st.spinner(f"Analyzing {uploaded_file.name}..."):
+            analysis_json = analyze_thumbnail(img_bytes)
+        st.subheader(f"Analysis for {uploaded_file.name}")
+        st.json(json.loads(analysis_json))
+        analyses[uploaded_file.name] = json.loads(analysis_json)
+
+    # Synthesize common patterns across all thumbnails
+    synth_system = (
+        "You are an expert in visual psychology and design strategy. "
+        "Given multiple analyses of thumbnail images (in JSON), identify the most common visual patterns and psychological strategies. "
+        "Provide a list of prompt templates that can recreate each identified pattern/psychology."
+    )
+    synth_user = (
+        "Here are the analyses for each thumbnail (JSON mapping filename to analysis):\n" +
+        json.dumps(analyses)
+    )
+
+    synth_resp = openai.ChatCompletion.create(
         model="gpt-4o",
-        messages=[{"role":"system","content":sys}, {"role":"user","content":usr}],
-        max_tokens=150
+        messages=[
+            {"role": "system", "content": synth_system},
+            {"role": "user", "content": synth_user}
+        ]
     )
-    return r.choices[0].message.content.strip()
 
-def synthesize(client, analyses: list[str]) -> str:
-    """
-    Takes the plain-text analyses, and returns:
-      • 3 bullets summarizing common patterns & hooks
-      • A single line starting with "Image Prompt:" for generation
-    """
-    # only keep the last 5 analyses to stay small
-    recent = analyses[-5:]
-    joined = "\n\n".join(f"Analysis #{i+1}:\n{a}" for i,a in enumerate(recent))
-    sys = "You are an expert in marketing psychology and design."
-    usr = (
-        "Given these analyses, in plain text:\n"
-        "1) Summarize the COMMON visual patterns & psychological hooks in 3 bullet points.\n"
-        "2) Then on its own line, write:\n"
-        "   Image Prompt: <your concise prompt to recreate that style>\n\n"
-        f"{joined}"
+    common_prompts = synth_resp.choices[0].message.content
+    st.subheader("Common Patterns & Generated Prompt Templates")
+    st.write(common_prompts)
+
+    # Allow the user to edit the combined prompt
+    st.subheader("Customize & Generate Thumbnail")
+    prompt_input = st.text_area(
+        "Edit the prompt to replicate desired psychology and pattern:",
+        value=common_prompts,
+        height=200
     )
-    r = client.chat.completions.create(
-        model="gpt-4o",
-        messages=[{"role":"system","content":sys}, {"role":"user","content":usr}],
-        max_tokens=200
+
+    if st.button("Generate Sample Thumbnail with GPT-Image-1"):  # Use gpt_image_1 model
+        with st.spinner("Generating image..."):
+            img_gen = openai.Image.create(
+                model="gpt_image_1",
+                prompt=prompt_input,
+                n=1,
+                size="512x512"
+            )
+        st.subheader("Generated Thumbnail Preview")
+        st.image(img_gen.data[0].url, use_column_width=True)
+
+    # Provide a reusable visual breakdown prompt
+    breakdown_prompt = (
+        "You are an expert in visual communication, marketing psychology, and digital design. "
+        "Provide a detailed template for visual elements breakdown that can be used to analyze any thumbnail image. "
+        "Include sections for color theory, composition, typography, iconography, and focal hierarchy."
     )
-    return r.choices[0].message.content.strip()
-
-def generate_image(client, prompt: str) -> Image.Image:
-    resp = client.images.generate(
-        model="gpt_image_1", prompt=prompt, size="1024x576", n=1
-    )
-    data = base64.b64decode(resp.data[0].b64_json)
-    return Image.open(io.BytesIO(data))
-
-def main():
-    st.title("🖼️ Thumbnail Analyzer & Generator")
-    st.write("1. Upload thumbnails → 2. Analyze bullets → 3. Synthesize bullets & prompt → 4. Generate image")
-
-    client = get_client()
-    if not client:
-        return
-
-    if "items" not in st.session_state:
-        st.session_state.items = []  # each is {name, size, analysis}
-
-    files = st.file_uploader("Upload JPG/PNG", accept_multiple_files=True)
-    if files:
-        to_process = []
-        for f in files:
-            raw = f.read()
-            if not any(i["name"]==f.name and i["size"]==len(raw) for i in st.session_state.items):
-                to_process.append((f.name, raw))
-        if to_process and st.button(f"Analyze {len(to_process)} New"):
-            with st.spinner("Analyzing…"):
-                for name, raw in to_process:
-                    b64str = to_b64(raw)
-                    analysis = analyze_image(client, b64str, name)
-                    st.session_state.items.append({"name":name,"size":len(raw),"analysis":analysis})
-            st.success("Analysis done.")
-
-    if st.session_state.items:
-        st.markdown("### Individual Analyses")
-        for it in st.session_state.items:
-            st.markdown(f"**{it['name']}**")
-            st.write(it["analysis"])
-
-        if st.button("Synthesize & Generate"):
-            with st.spinner("Synthesizing…"):
-                texts = [it["analysis"] for it in st.session_state.items]
-                synthesis = synthesize(client, texts)
-            st.subheader("Common Patterns & Hooks")
-            st.write("\n".join(synthesis.split("\n")[:-1]))  # all lines except the last
-            prompt_line = synthesis.split("\n")[-1]
-            st.subheader("Generated Thumbnail")
-            thumb = generate_image(client, prompt_line.replace("Image Prompt:","").strip())
-            st.image(thumb, use_column_width=True)
-            st.markdown(f"**{prompt_line}**")
-
-    st.sidebar.info("Uses only OpenAI: GPT-4 Vision for analysis & gpt_image_1 for generation.")
-
-if __name__ == "__main__":
-    main()
+    st.subheader("Visual Breakdown Prompt Template")
+    st.code(breakdown_prompt)
